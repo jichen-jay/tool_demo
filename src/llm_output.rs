@@ -65,3 +65,52 @@ macro_rules! extract_args_and_types {
         const ARG_TYPES: &[&str] = &[$(stringify!($arg_type)),*];
     };
 }
+
+
+
+impl Tool {
+    fn call(&self, args: Vec<Value>) -> Result<Value> {
+        (self.function)(&args)
+    }
+}
+
+trait ArgValue: Debug {
+    fn as_any(&self) -> &dyn Any;
+}
+
+impl ArgValue for i32 {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl ArgValue for f32 {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl ArgValue for bool {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+impl ArgValue for String {
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+}
+
+macro_rules! extract_arg {
+    ($args:expr, $name:expr, $type:expr) => {{
+        let arg = $args.get($name.as_str()).unwrap();
+        match $type.as_str() {
+            "i32" => arg.downcast_ref::<i32>().unwrap() as &dyn ArgValue,
+            "f32" => arg.downcast_ref::<f32>().unwrap() as &dyn ArgValue,
+            "bool" => arg.downcast_ref::<bool>().unwrap() as &dyn ArgValue,
+            "&str" | "String" => arg.downcast_ref::<String>().unwrap() as &dyn ArgValue,
+            _ => panic!("Unsupported argument type: {}", $type),
+        }
+    }};
+}
