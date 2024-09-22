@@ -1,104 +1,113 @@
-#[macro_export]
-macro_rules! register_tool {
-    ($json:expr, fn $func:ident($($arg_name:ident : $arg_type:ty),*) -> $ret_type:ty) => {{
-        let arg_names = vec![$(stringify!($arg_name).to_string()),*];
-        let arg_types = vec![$(stringify!($arg_type).to_string()),*];
-
-        let intermediary = convert_function!($func, arg_names, arg_types);
-
-        let tool = create_tool($json, intermediary, arg_names, arg_types);
-        TOOL_REGISTRY.lock().unwrap().insert(tool.name.clone(), tool);
-    }};
-}
-
-fn create_tool<F>(
-    json_description: &str,
-    func: F,
-    arg_names: Vec<String>,
-    arg_types: Vec<String>,
-) -> Tool
-where
-    F: Fn(&[&str]) -> Result<String> + Send + Sync + 'static,
-{
-    let description: Value = serde_json::from_str(json_description).unwrap();
-    Tool {
-        name: description["name"].as_str().unwrap().to_string(),
-        args: arg_names,
-        args_type: arg_types,
-        function: Box::new(func),
-    }
-}
-use std::any::Any;
-use anyhow::{anyhow, Result};
-use lazy_static::lazy_static;
 use serde_json::Value;
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::error::Error;
+use std::sync::Arc;
 
-lazy_static! {
-    static ref TOOL_REGISTRY: Mutex<HashMap<String, Tool>> = Mutex::new(HashMap::new());
-}
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 struct Tool {
     name: String,
+    json_description: String,
     function: Box<dyn Fn(&[&str]) -> Result<String> + Send + Sync>,
-    args: Vec<String>,
-    args_type: Vec<String>,
+    arg_names: Vec<String>,
+    arg_types: Vec<String>,
 }
-
-impl Tool {
-    fn call(&self, args: &[&str]) -> Result<String> {
-        (self.function)(args)
-    }
-}
-fn convert_value(arg_type: &str, arg_value: &str) -> Result<Box<dyn Any>> {
-    match arg_type {
-        "i32" => Ok(Box::new(arg_value.parse::<i32>().map_err(|e| anyhow!("Failed to parse '{}' as i32: {}", arg_value, e))?)),
-        "f32" => Ok(Box::new(arg_value.parse::<f32>().map_err(|e| anyhow!("Failed to parse '{}' as f32: {}", arg_value, e))?)),
-        "bool" => Ok(Box::new(arg_value.parse::<bool>().map_err(|e| anyhow!("Failed to parse '{}' as bool: {}", arg_value, e))?)),
-        "&str" | "String" => Ok(Box::new(arg_value.to_string())),
-        _ => Err(anyhow!("Unsupported argument type: {}", arg_type)),
-    }
-}
-
-
 #[macro_export]
-macro_rules! convert_function {
-    ($func:ident, $arg_names:expr, $arg_types:expr) => {{
-        let arg_names = $arg_names.clone();
-        let arg_types = $arg_types.clone();
+macro_rules! create_tool_with_function {
+    (
+        fn $func_name:ident($($arg_name:ident : $arg_type:ty),*) -> $ret_type:ty,
+        $json_description:expr
+    ) => {{
+        let arg_names = vec![$(stringify!($arg_name).to_string()),*];
+        let arg_types = vec![$(stringify!($arg_type).to_string()),*];
 
-        Box::new(move |args: &[&str]| -> Result<String> {
-            if args.len() != arg_names.len() {
-                return Err(anyhow!("Incorrect number of arguments"));
-            }
+        let arg_names_cloned = arg_names.clone();
+        let arg_types_cloned = arg_types.clone();
 
-            let mut converted_args: Vec<Box<dyn Any>> = Vec::new();
+        let func = Box::new(move |args: &[&str]| -> Result<String> {
+            let mut iter = args.iter();
+            let mut parsed_args: Vec<Box<dyn std::any::Any>> = Vec::new();
 
-            for (i, (arg_name, arg_type)) in arg_names.iter().zip(arg_types.iter()).enumerate() {
-                let arg_value = args[i];
-                let converted_arg = convert_value(arg_type, arg_value)?;
-                converted_args.push(converted_arg);
-            }
+            for (arg_name, arg_type) in arg_names_cloned.iter().zip(arg_types_cloned.iter()) {
+                let arg = iter
+                    .next()
+                    .ok_or_else(|| format!("Missing argument: {}", arg_name))?;
 
-            let result = match converted_args.as_slice() {
-                [a, b, c, d, e] => {
-                    let a = a.downcast_ref::<i32>().unwrap();
-                    let b = b.downcast_ref::<f32>().unwrap();
-                    let c = c.downcast_ref::<bool>().unwrap();
-                    let d = d.downcast_ref::<String>().unwrap();
-                    let e = e.downcast_ref::<i32>().unwrap();
-                    $func(*a, *b, *c, d, *e)
+                match arg_type.as_str() {
+                    "i32" => parsed_args.push(Box::new(arg.parse::<i32>()?)),
+                    "f32" => parsed_args.push(Box::new(arg.parse::<f32>()?)),
+                    "bool" => parsed_args.push(Box::new(arg.parse::<bool>()?)),
+                    "&str" | "String" => parsed_args.push(Box::new(arg.to_string())),
+                    _ => return Err(format!("Unsupported argument type: {}", arg_type).into()),
                 }
-                _ => return Err(anyhow!("Unsupported number of arguments")),
-            };
+            }
 
+            let result = $func_name(
+                *parsed_args[0].downcast_ref::<i32>().unwrap(),
+                *parsed_args[1].downcast_ref::<f32>().unwrap(),
+                *parsed_args[2].downcast_ref::<bool>().unwrap(),
+                parsed_args[3].downcast_ref::<String>().unwrap(),
+                *parsed_args[4].downcast_ref::<i32>().unwrap(),
+            );
             Ok(result)
-        }) as Box<dyn Fn(&[&str]) -> Result<String> + Send + Sync>
+        }) as Box<dyn Fn(&[&str]) -> Result<String> + Send + Sync>;
+
+        Tool {
+            name: serde_json::from_str::<Value>($json_description).unwrap()["name"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            json_description: $json_description.to_string(),
+            arg_names,
+            arg_types,
+            function: func,
+        }
     }};
 }
 
+impl Tool {
+    fn call(&self, arguments_w_val: Value) -> Result<String> {
+        let arguments = arguments_w_val["arguments"].as_array().unwrap();
 
+        let arg_map = arguments
+            .into_iter()
+            .map(|arg| arg.as_object().unwrap().iter().next().unwrap())
+            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
+            .collect::<HashMap<String, String>>();
+
+        let mut ordered_vals = Vec::new();
+        for (arg_name, arg_type) in self.arg_names.iter().zip(self.arg_types.iter()) {
+            let arg_value = arg_map.get(arg_name).unwrap();
+            let converted_val = convert_value(arg_type, arg_value)?;
+            ordered_vals.push(converted_val);
+        }
+
+        let args: Vec<&str> = ordered_vals.iter().map(|s| s.as_str()).collect();
+
+        (self.function)(&args)
+    }
+}
+
+fn convert_value(arg_type: &str, value: &str) -> Result<String> {
+    match arg_type {
+        "i32" => value
+            .parse::<i32>()
+            .map(|v| v.to_string())
+            .map_err(|e| e.into()),
+        "f32" => value
+            .parse::<f32>()
+            .map(|v| v.to_string())
+            .map_err(|e| e.into()),
+        "bool" => value
+            .parse::<bool>()
+            .map(|v| v.to_string())
+            .map_err(|e| e.into()),
+        "&str" | "String" => Ok(value.to_string()),
+        _ => Err(format!("Unsupported argument type: {}", arg_type).into()),
+    }
+}
+
+// Example function to be wrapped
 fn process_values(a: i32, b: f32, c: bool, d: &str, e: i32) -> String {
     format!(
         "Processed: a = {}, b = {}, c = {}, d = {}, e = {}",
@@ -106,8 +115,8 @@ fn process_values(a: i32, b: f32, c: bool, d: &str, e: i32) -> String {
     )
 }
 
-fn main() -> anyhow::Result<()> {
-    let tool_json = r#"
+fn main() -> Result<()> {
+    let json_description = r#"
     {
         "name": "process_values",
         "description": "Processes up to 5 different types of values",
@@ -140,44 +149,25 @@ fn main() -> anyhow::Result<()> {
     }
     "#;
 
-    register_tool!(tool_json, fn process_values(a: i32, b: f32, c: bool, d: &str, e: i32) -> String);
-
-    let llm_output = r#"
-    {
+    // Example JSON input
+    let json_input = serde_json::json!({
         "arguments": [
-            {"e": "100"},
-            {"a": "42"},
-            {"c": "true"},
-            {"b": "3.14"},
-            {"d": "Hello world"}
-        ],
-        "name": "process_values"
-    }
-    "#;
-    let llm_parsed: Value = serde_json::from_str(llm_output)?;
-    let function_name = llm_parsed["name"].as_str().unwrap();
-    let arguments = llm_parsed["arguments"].as_array().unwrap();
+            { "a": "42" },
+            { "b": "3.14" },
+            { "c": "true" },
+            { "d": "example" },
+            { "e": "100" }
+        ]
+    });
 
-    let mut arg_map = HashMap::new();
-    for arg in arguments {
-        let (key, value) = arg.as_object().unwrap().iter().next().unwrap();
-        arg_map.insert(key.clone(), value.as_str().unwrap());
-    }
+    // Use the combined macro to create the Tool
+    let tool = create_tool_with_function!(
+        fn process_values(a: i32, b: f32, c: bool, d: &str, e: i32) -> String,
+        json_description
+    );
 
-    // Extract arguments by name
-    let args: Vec<&str> = vec![
-        arg_map.get("a").unwrap(),
-        arg_map.get("b").unwrap(),
-        arg_map.get("c").unwrap(),
-        arg_map.get("d").unwrap(),
-        arg_map.get("e").unwrap(),
-    ];
-
-    let registry = TOOL_REGISTRY.lock().unwrap();
-    let function = registry.get(function_name).unwrap();
-
-    let result = function.call(&args)?;
-    println!("Result: {}", result);
+    let result = tool.call(json_input)?;
+    println!("{}", result); // Output: Processed: a = 42, b = 3.14, c = true, d = example, e = 100
 
     Ok(())
 }
