@@ -1,53 +1,152 @@
+impl Tool {
+    fn call(&self, arguments_w_val: Value) -> Result<String> {
+        let arguments = arguments_w_val["arguments"].as_array().unwrap();
+        println!("Arguments: {:?}", arguments);
+        println!("Argument names: {:?}", self.arg_names);
+        println!("Argument types: {:?}", self.arg_types);
+
+        let mut ordered_vals = Vec::new();
+
+        for arg_name in &self.arg_names {
+            let arg_value = arguments.iter().find_map(|arg| {
+                let obj = arg.as_object().unwrap();
+                obj.get(arg_name)
+            });
+
+            if let Some(arg_value) = arg_value {
+                println!("Argument name: {}, Value: {:?}", arg_name, arg_value);
+                ordered_vals.push(arg_value.as_str().unwrap());
+            } else {
+                return Err(format!("Missing argument: {}", arg_name).into());
+            }
+        }
+        println!("Ordered values: {:?}", ordered_vals);
+
+        (self.function)(&ordered_vals)
+    }
+}
+
 use serde_json::Value;
-use std::collections::HashMap;
+use std::any::Any;
 use std::error::Error;
-use std::sync::Arc;
 
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
+#[derive(Debug)]
+enum SupportedType {
+    I32(i32),
+    F32(f32),
+    Bool(bool),
+    String(String),
+}
+
 struct Tool {
     name: String,
-    json_description: String,
     function: Box<dyn Fn(&[&str]) -> Result<String> + Send + Sync>,
     arg_names: Vec<String>,
     arg_types: Vec<String>,
 }
+
+fn parse_argument(arg_type: &str, arg_value: &str) -> Result<SupportedType> {
+    match arg_type {
+        "i32" => Ok(SupportedType::I32(arg_value.parse::<i32>()?)),
+        "f32" => Ok(SupportedType::F32(arg_value.parse::<f32>()?)),
+        "bool" => Ok(SupportedType::Bool(arg_value.parse::<bool>()?)),
+        "&str" | "String" => Ok(SupportedType::String(arg_value.to_string())),
+        _ => Err(format!("Unsupported argument type: {}", arg_type).into()),
+    }
+}
+fn downcast_argument<'a>(arg: &'a SupportedType, expected_type: &'a str) -> Result<&'a dyn Any> {
+    match (arg, expected_type) {
+        (SupportedType::I32(val), "i32") => Ok(val as &dyn Any),
+        (SupportedType::F32(val), "f32") => Ok(val as &dyn Any),
+        (SupportedType::Bool(val), "bool") => Ok(val as &dyn Any),
+        (SupportedType::String(val), "&str") | (SupportedType::String(val), "String") => {
+            Ok(val as &dyn Any)
+        }
+        _ => Err(format!("Type mismatch or unsupported type: expected {}", expected_type).into()),
+    }
+}
+
+// fn downcast_argument<'a>(arg: &'a SupportedType, expected_type: &'a str) -> Result<Box<dyn Any + 'a>> {
+//     match (arg, expected_type) {
+//         (SupportedType::I32(val), "i32") => Ok(Box::new(*val) as Box<dyn Any>),
+//         (SupportedType::F32(val), "f32") => Ok(Box::new(*val) as Box<dyn Any>),
+//         (SupportedType::Bool(val), "bool") => Ok(Box::new(*val) as Box<dyn Any>),
+//         (SupportedType::String(val), "&str") | (SupportedType::String(val), "String") => {
+//             Ok(Box::new(val.as_str()) as Box<dyn Any>)
+//         }
+//         _ => Err(format!("Type mismatch or unsupported type: expected {}", expected_type).into()),
+//     }
+// }
+
+// fn downcast_argument(arg: &SupportedType) -> Result<&dyn std::any::Any> {
+//     match arg {
+//         SupportedType::I32(val) => Ok(val as &dyn std::any::Any),
+//         SupportedType::F32(val) => Ok(val as &dyn std::any::Any),
+//         SupportedType::Bool(val) => Ok(val as &dyn std::any::Any),
+//         SupportedType::String(val) => Ok(val as &dyn std::any::Any),
+//     }
+// }
+
 #[macro_export]
 macro_rules! create_tool_with_function {
+    
     (
-        fn $func_name:ident($($arg_name:ident : $arg_type:ty),*) -> $ret_type:ty,
+        fn $func_name:ident($arg1_name:ident : $arg1_type:ty, $arg2_name:ident : $arg2_type:ty, $arg3_name:ident : $arg3_type:ty, $arg4_name:ident : $arg4_type:ty, $arg5_name:ident : $arg5_type:ty) -> $ret_type:ty,
         $json_description:expr
     ) => {{
-        let arg_names = vec![$(stringify!($arg_name).to_string()),*];
-        let arg_types = vec![$(stringify!($arg_type).to_string()),*];
+        let arg_names = vec![
+            stringify!($arg1_name).to_string(),
+            stringify!($arg2_name).to_string(),
+            stringify!($arg3_name).to_string(),
+            stringify!($arg4_name).to_string(),
+            stringify!($arg5_name).to_string(),
+        ];
+        let arg_types = vec![
+            stringify!($arg1_type).to_string(),
+            stringify!($arg2_type).to_string(),
+            stringify!($arg3_type).to_string(),
+            stringify!($arg4_type).to_string(),
+            stringify!($arg5_type).to_string(),
+        ];
 
-        let arg_names_cloned = arg_names.clone();
-        let arg_types_cloned = arg_types.clone();
+        let arg_types_clone = arg_types.clone();
 
         let func = Box::new(move |args: &[&str]| -> Result<String> {
-            let mut iter = args.iter();
-            let mut parsed_args: Vec<Box<dyn std::any::Any>> = Vec::new();
-
-            for (arg_name, arg_type) in arg_names_cloned.iter().zip(arg_types_cloned.iter()) {
-                let arg = iter
-                    .next()
-                    .ok_or_else(|| format!("Missing argument: {}", arg_name))?;
-
-                match arg_type.as_str() {
-                    "i32" => parsed_args.push(Box::new(arg.parse::<i32>()?)),
-                    "f32" => parsed_args.push(Box::new(arg.parse::<f32>()?)),
-                    "bool" => parsed_args.push(Box::new(arg.parse::<bool>()?)),
-                    "&str" | "String" => parsed_args.push(Box::new(arg.to_string())),
-                    _ => return Err(format!("Unsupported argument type: {}", arg_type).into()),
-                }
+            if args.len() != 5 {
+                return Err(format!("Expected 5 arguments, got {}", args.len()).into());
             }
 
+            let parsed_arg1 = parse_argument(&arg_types[0], args[0])?;
+            let parsed_arg2 = parse_argument(&arg_types[1], args[1])?;
+            let parsed_arg3 = parse_argument(&arg_types[2], args[2])?;
+            let parsed_arg4 = parse_argument(&arg_types[3], args[3])?;
+            let parsed_arg5 = parse_argument(&arg_types[4], args[4])?;
+
+            let downcasted_arg1 = downcast_argument(&parsed_arg1, &arg_types[0])?;
+            let downcasted_arg1 = downcasted_arg1.downcast_ref::<$arg1_type>().unwrap();
+
+            let downcasted_arg2 = downcast_argument(&parsed_arg2, &arg_types[1])?;
+            let downcasted_arg2 = downcasted_arg2.downcast_ref::<$arg2_type>().unwrap();
+
+            let downcasted_arg3 = downcast_argument(&parsed_arg3, &arg_types[2])?;
+            let downcasted_arg3 = downcasted_arg3.downcast_ref::<$arg3_type>().unwrap();
+
+            let downcasted_arg4 = downcast_argument(&parsed_arg4, &arg_types[3])?;
+            let downcasted_arg4 = downcasted_arg4.downcast_ref::<$arg4_type>().unwrap();
+
+            let downcasted_arg5 = downcast_argument(&parsed_arg5, &arg_types[4])?;
+            let downcasted_arg5 = downcasted_arg5.downcast_ref::<$arg5_type>().unwrap();
+
+        
+
             let result = $func_name(
-                *parsed_args[0].downcast_ref::<i32>().unwrap(),
-                *parsed_args[1].downcast_ref::<f32>().unwrap(),
-                *parsed_args[2].downcast_ref::<bool>().unwrap(),
-                parsed_args[3].downcast_ref::<String>().unwrap(),
-                *parsed_args[4].downcast_ref::<i32>().unwrap(),
+                *downcasted_arg1,
+                *downcasted_arg2,
+                *downcasted_arg3,
+                *downcasted_arg4,
+                *downcasted_arg5,
             );
             Ok(result)
         }) as Box<dyn Fn(&[&str]) -> Result<String> + Send + Sync>;
@@ -57,54 +156,11 @@ macro_rules! create_tool_with_function {
                 .as_str()
                 .unwrap()
                 .to_string(),
-            json_description: $json_description.to_string(),
-            arg_names,
-            arg_types,
             function: func,
+            arg_names: arg_names,
+            arg_types: arg_types_clone,
         }
     }};
-}
-
-impl Tool {
-    fn call(&self, arguments_w_val: Value) -> Result<String> {
-        let arguments = arguments_w_val["arguments"].as_array().unwrap();
-
-        let arg_map = arguments
-            .into_iter()
-            .map(|arg| arg.as_object().unwrap().iter().next().unwrap())
-            .map(|(k, v)| (k.clone(), v.as_str().unwrap().to_string()))
-            .collect::<HashMap<String, String>>();
-
-        let mut ordered_vals = Vec::new();
-        for (arg_name, arg_type) in self.arg_names.iter().zip(self.arg_types.iter()) {
-            let arg_value = arg_map.get(arg_name).unwrap();
-            let converted_val = convert_value(arg_type, arg_value)?;
-            ordered_vals.push(converted_val);
-        }
-
-        let args: Vec<&str> = ordered_vals.iter().map(|s| s.as_str()).collect();
-
-        (self.function)(&args)
-    }
-}
-
-fn convert_value(arg_type: &str, value: &str) -> Result<String> {
-    match arg_type {
-        "i32" => value
-            .parse::<i32>()
-            .map(|v| v.to_string())
-            .map_err(|e| e.into()),
-        "f32" => value
-            .parse::<f32>()
-            .map(|v| v.to_string())
-            .map_err(|e| e.into()),
-        "bool" => value
-            .parse::<bool>()
-            .map(|v| v.to_string())
-            .map_err(|e| e.into()),
-        "&str" | "String" => Ok(value.to_string()),
-        _ => Err(format!("Unsupported argument type: {}", arg_type).into()),
-    }
 }
 
 // Example function to be wrapped
@@ -136,7 +192,7 @@ fn main() -> Result<()> {
                     "description": "A boolean value"
                 },
                 "d": {
-                    "type": "String",
+                    "type": "string",
                     "description": "A string value"
                 },
                 "e": {
@@ -160,12 +216,9 @@ fn main() -> Result<()> {
         ]
     });
 
-    // Use the combined macro to create the Tool
-    let tool = create_tool_with_function!(
-        fn process_values(a: i32, b: f32, c: bool, d: &str, e: i32) -> String,
-        json_description
-    );
-
+    let tool = create_tool_with_function!( fn process_values(a: i32, b: f32, c: bool, d: &str, e: i32) -> String, json_description );
+    println!("Tool created: {:?}", tool.arg_types);
+    println!("Tool created: {:?}", tool.arg_names);
     let result = tool.call(json_input)?;
     println!("{}", result); // Output: Processed: a = 42, b = 3.14, c = true, d = example, e = 100
 
