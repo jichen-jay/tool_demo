@@ -232,35 +232,66 @@ fn main() -> Result<()> {
 
 macro_rules! create_tool_with_function {
     (
-        fn $func_name:ident($($arg_name:ident : $arg_type:ty),*) -> $ret_type:ty,
+        fn $func_name:ident($arg1_name:ident : $arg1_type:ty, $arg2_name:ident : $arg2_type:ty, $arg3_name:ident : $arg3_type:ty, $arg4_name:ident : $arg4_type:ty, $arg5_name:ident : $arg5_type:ty) -> $ret_type:ty,
         $json_description:expr
     ) => {{
         let arg_names = vec![
-            $(stringify!($arg_name).to_string()),*
+            stringify!($arg1_name).to_string(),
+            stringify!($arg2_name).to_string(),
+            stringify!($arg3_name).to_string(),
+            stringify!($arg4_name).to_string(),
+            stringify!($arg5_name).to_string(),
         ];
         let arg_types = vec![
-            $(stringify!($arg_type).to_string()),*
+            stringify!($arg1_type).to_string(),
+            stringify!($arg2_type).to_string(),
+            stringify!($arg3_type).to_string(),
+            stringify!($arg4_type).to_string(),
+            stringify!($arg5_type).to_string(),
         ];
+
+        let arg_names_clone = arg_names.clone();
+        let arg_types_clone = arg_types.clone();
+        let mut parsers: HashMap<&str, fn(&str) -> Box<dyn Any>> = HashMap::new();
+        parsers.insert("i32", |v| Box::new(parse_i32(v)));
+        parsers.insert("f32", |v| Box::new(parse_f32(v)));
+        parsers.insert("bool", |v| Box::new(parse_bool(v)));
+        parsers.insert("String", |v| Box::new(parse_string(v)));
 
         let func = Box::new(move |args: &[&str]| -> Result<String> {
             if args.len() != arg_names.len() {
                 return Err(format!("Expected {} arguments, got {}", arg_names.len(), args.len()).into());
             }
 
-            // Parse each argument based on its type
-            let parsed_args = (
-                $(
-                    match parse_argument(&arg_types[args.iter().position(|&x| x == stringify!($arg_name)).unwrap()], args[args.iter().position(|&x| x == stringify!($arg_name)).unwrap()])? {
-                        SupportedType::I32(val) => val,
-                        SupportedType::F32(val) => val,
-                        SupportedType::Bool(val) => val,
-                        SupportedType::String(val) => val,
-                    }
-                ),*
+            let mut parsed_args = Vec::new();
+
+            for (i, arg_type) in arg_types.iter().enumerate() {
+                let parse_fn = parsers.get(arg_type.as_str()).expect("Parser not found");
+                let boxed_value = parse_fn(args[i]);
+
+                if arg_type == "String" {
+                    let parsed_arg: String = boxed_value.downcast_ref::<String>().expect("Type mismatch").clone();
+                    parsed_args.push(Box::new(parsed_arg) as Box<dyn Any>);
+                } else if arg_type == "i32" {
+                    let parsed_arg: i32 = *boxed_value.downcast_ref::<i32>().expect("Type mismatch");
+                    parsed_args.push(Box::new(parsed_arg) as Box<dyn Any>);
+                } else if arg_type == "f32" {
+                    let parsed_arg: f32 = *boxed_value.downcast_ref::<f32>().expect("Type mismatch");
+                    parsed_args.push(Box::new(parsed_arg) as Box<dyn Any>);
+                } else if arg_type == "bool" {
+                    let parsed_arg: bool = *boxed_value.downcast_ref::<bool>().expect("Type mismatch");
+                    parsed_args.push(Box::new(parsed_arg) as Box<dyn Any>);
+                }
+            }
+
+            let result = $func_name(
+                *parsed_args[0].downcast_ref::<$arg1_type>().unwrap(),
+                *parsed_args[1].downcast_ref::<$arg2_type>().unwrap(),
+                *parsed_args[2].downcast_ref::<$arg3_type>().unwrap(),
+                parsed_args[3].downcast_ref::<$arg4_type>().unwrap().clone(),
+                *parsed_args[4].downcast_ref::<$arg5_type>().unwrap(),
             );
 
-            // Call the function with the parsed arguments
-            let result = $func_name(parsed_args);
             Ok(result)
         }) as Box<dyn Fn(&[&str]) -> Result<String> + Send + Sync>;
 
@@ -270,8 +301,8 @@ macro_rules! create_tool_with_function {
                 .unwrap()
                 .to_string(),
             function: func,
-            arg_names: arg_names,
-            arg_types: arg_types,
+            arg_names: arg_names_clone,
+            arg_types: arg_types_clone,
         }
     }};
 }
