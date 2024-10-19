@@ -1,20 +1,24 @@
 use proc_macro::TokenStream;
-use quote::quote;
-use syn::{parse_macro_input, ItemFn, Expr};
+use quote::{format_ident, quote};
+use syn::{parse_macro_input, Expr, ItemFn};
 
 #[proc_macro_attribute]
-pub fn create_tool_with_function(_attr: TokenStream, item: TokenStream) -> TokenStream {
-    // Parse the input tokens into a syntax tree
+pub fn create_tool_with_function(attr: TokenStream, item: TokenStream) -> TokenStream {
+    // Parse the input function
     let input_fn = parse_macro_input!(item as ItemFn);
-    let attr_expr = parse_macro_input!(_attr as Expr);
+
+    // Parse the attribute as an expression
+    let attr_expr = parse_macro_input!(attr as Expr);
 
     // Extract the function name
     let fn_name = &input_fn.sig.ident;
 
+    // Create a variable name for the Tool instance
+    let tool_var_name = format_ident!("{}_TOOL", fn_name.to_string().to_uppercase());
+
     // Extract argument names and types
     let inputs = &input_fn.sig.inputs;
     let mut arg_names = Vec::new();
-    let mut arg_types = Vec::new();
     let mut arg_type_tokens = Vec::new();
 
     for arg in inputs {
@@ -26,18 +30,18 @@ pub fn create_tool_with_function(_attr: TokenStream, item: TokenStream) -> Token
             }
             // Get the argument type
             let arg_type = &*pat_type.ty;
-            arg_types.push(quote! { #arg_type }.to_string());
             arg_type_tokens.push(arg_type.clone());
         }
     }
 
-    // Generate the code to create the Tool struct
+    // Generate the code to create the Tool structn
     let gen = quote! {
         #input_fn
 
-        fn create_tool() -> Tool {
+
+        pub static #tool_var_name: Lazy<Tool> = Lazy::new(|| {
             let arg_names = vec![#(stringify!(#arg_names).to_string()),*];
-            let arg_types = vec![#(stringify!(#arg_type_tokens)),*];
+            let arg_types = vec![#(stringify!(#arg_type_tokens).to_string()),*];
 
             let func = {
                 use std::sync::Arc;
@@ -46,11 +50,14 @@ pub fn create_tool_with_function(_attr: TokenStream, item: TokenStream) -> Token
 
                     let mut iter = args.iter();
                     #(
+                        let arg_type = stringify!(#arg_type_tokens);
                         let #arg_names = {
                             let arg = iter.next().ok_or("Not enough arguments")?.clone();
-                            let parser = parsers.get(#arg_types).ok_or("Parser not found")?;
+                            let parser = parsers.get(arg_type)
+                                .ok_or(format!("Parser not found for type {}", arg_type))?;
                             let any_val = parser(arg)?;
-                            let val = any_val.downcast::<#arg_type_tokens>().map_err(|_| "Type mismatch")?;
+                            let val = any_val.downcast::<#arg_type_tokens>()
+                                .map_err(|_| "Type mismatch")?;
                             *val
                         };
                     )*
@@ -60,17 +67,22 @@ pub fn create_tool_with_function(_attr: TokenStream, item: TokenStream) -> Token
                 func
             };
 
+            let tool_def_obj = #attr_expr;
+
+            // Ensure tool_def_obj is a &str
+            let tool_def_obj_ref: &str = &tool_def_obj;
+
             Tool {
-                name: serde_json::from_str::<serde_json::Value>(#attr_expr).unwrap()["name"]
+                name: serde_json::from_str::<serde_json::Value>(tool_def_obj_ref).unwrap()["name"]
                     .as_str()
                     .unwrap()
                     .to_string(),
                 function: func,
-                tool_def_obj: #attr_expr,
-                arg_names: vec![#(stringify!(#arg_names).to_string()),*],
-                arg_types: vec![#(stringify!(#arg_type_tokens).to_string()),*],
+                tool_def_obj: tool_def_obj.clone(),
+                arg_names: arg_names,
+                arg_types: arg_types,
             }
-        }
+        });
     };
 
     gen.into()

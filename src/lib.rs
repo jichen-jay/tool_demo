@@ -1,56 +1,8 @@
 use serde_json::Value;
 use std::collections::HashMap;
-use std::error::Error;
 use std::sync::Arc;
 
 type MyResult<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
-
-#[macro_export]
-macro_rules! create_tool_with_function {
-    (
-        fn $func_name:ident($($arg_name:ident : $arg_type:ty),*) -> $ret_type:ty,
-        $TOOL_DEF_OBJ:expr
-    ) => {{
-        let arg_names = vec![$(stringify!($arg_name).to_string()),*];
-        let arg_types = vec![$(stringify!($arg_type).to_string()),*];
-
-        let func = Arc::new(move |args: &[SupportedType]| -> MyResult<String> {
-            let parsers = get_parsers();
-
-            let mut iter = args.iter();
-            $(
-                let $arg_name = {
-                    let arg = iter.next().ok_or("Not enough arguments")?.clone();
-                    let parser = parsers.get(stringify!($arg_type)).ok_or("Parser not found")?;
-                    let any_val = parser(arg)?;
-                    let val = any_val.downcast::<$arg_type>().map_err(|_| "Type mismatch")?;
-                    *val
-                };
-            )*
-
-            $func_name($($arg_name),*)
-        }) as Arc<dyn Fn(&[SupportedType]) -> MyResult<String> + Send + Sync>;
-
-        Tool {
-            name: serde_json::from_str::<Value>($TOOL_DEF_OBJ)
-                .unwrap()["name"]
-                .as_str()
-                .unwrap()
-                .to_string(),
-            function: func,
-            arg_names: arg_names,
-            arg_types: arg_types,
-        }
-    }};
-}
-
-fn get_current_weather(location: String, unit: String) -> MyResult<String> {
-    if location.contains("New") {
-        Ok(format!("Weather for {} in {}", location, unit))
-    } else {
-        Err(format!("Weather for {} in {}", location, unit).into())
-    }
-}
 
 pub const GET_WEATHER_TOOL_DEF_OBJ: &str = r#"
         {
@@ -74,18 +26,145 @@ pub const GET_WEATHER_TOOL_DEF_OBJ: &str = r#"
         }
         "#;
 
-// Implement SupportedType and parsers
+pub const PROCESS_VALUE_TOOL_DEF_OBJ: &str = r#"
+{
+    "name": "process_values",
+    "description": "Processes up to 5 different types of values",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "a": {
+                "type": "i32",
+                "description": "An integer value"
+            },
+            "b": {
+                "type": "f32",
+                "description": "A floating-point value"
+            },
+            "c": {
+                "type": "bool",
+                "description": "A boolean value"
+            },
+            "d": {
+                "type": "string",
+                "description": "A string value"
+            },
+            "e": {
+                "type": "i32",
+                "description": "Another integer value"
+            }
+        },
+        "required": ["a", "b", "c", "d", "e"]
+    }
+}
+"#;
+
 #[derive(Debug, Clone)]
-enum SupportedType {
+pub enum SupportedType {
     I32(i32),
     F32(f32),
     Bool(bool),
     String(String),
 }
 
+// Define Tool struct
+#[derive(Clone)]
+pub struct Tool {
+  pub name: String,
+  pub function: Arc<dyn Fn(&[SupportedType]) -> MyResult<String> + Send + Sync>,
+  pub tool_def_obj: &'static str,
+  pub arg_names: Vec<String>,
+  pub arg_types: Vec<String>,
+}
+impl Tool {
+    pub fn call(&self, arguments_w_val: Value) -> MyResult<String> {
+        let arguments = arguments_w_val
+            .as_object()
+            .ok_or("Invalid arguments format")?;
+        let mut ordered_vals = Vec::new();
+
+        for (i, arg_name) in self.arg_names.iter().enumerate() {
+            let arg_value = if let Some(args) = arguments.get("arguments") {
+                // Handle the case where "arguments" is an array
+                if let Some(array) = args.as_array() {
+                    // Search for the argument in the array
+                    let mut found = None;
+                    for item in array {
+                        if let Some(obj) = item.as_object() {
+                            if let Some(value) = obj.get(arg_name) {
+                                found = Some(value.clone());
+                                break;
+                            }
+                        }
+                    }
+                    found.ok_or(format!("Missing argument: {}", arg_name))?
+                } else if let Some(obj) = args.as_object() {
+                    // Handle the case where "arguments" is an object
+                    obj.get(arg_name)
+                        .ok_or(format!("Missing argument: {}", arg_name))?
+                        .clone()
+                } else {
+                    return Err("Invalid arguments format".into());
+                }
+            } else {
+                // Try to get the argument from the top level
+                arguments
+                    .get(arg_name)
+                    .ok_or(format!("Missing argument: {}", arg_name))?
+                    .clone()
+            };
+
+            let parsed_arg = parse_argument(&self.arg_types[i], &arg_value);
+            ordered_vals.push(parsed_arg);
+        }
+
+        (self.function)(&ordered_vals)
+    }
+}
+
+pub fn parse_argument(arg_type: &str, arg_value: &Value) -> SupportedType {
+    match arg_type {
+        "i32" => {
+            if let Some(n) = arg_value.as_i64() {
+                SupportedType::I32(n as i32)
+            } else {
+                panic!("Expected i32 for argument");
+            }
+        }
+        "f32" => {
+            if let Some(f) = arg_value.as_f64() {
+                SupportedType::F32(f as f32)
+            } else {
+                panic!("Expected f32 for argument");
+            }
+        }
+        "bool" => {
+            if let Some(b) = arg_value.as_bool() {
+                SupportedType::Bool(b)
+            } else if let Some(s) = arg_value.as_str() {
+                match s {
+                    "true" => SupportedType::Bool(true),
+                    "false" => SupportedType::Bool(false),
+                    _ => panic!("Expected bool for argument"),
+                }
+            } else {
+                panic!("Expected bool for argument");
+            }
+        }
+        "String" | "&str" => {
+            if let Some(s) = arg_value.as_str() {
+                SupportedType::String(s.to_string())
+            } else {
+                panic!("Expected String for argument");
+            }
+        }
+        _ => panic!("Invalid type"),
+    }
+}
+
 type ParserFn = dyn Fn(SupportedType) -> MyResult<Box<dyn std::any::Any>> + Send + Sync;
 
-fn get_parsers() -> HashMap<&'static str, Box<ParserFn>> {
+pub fn get_parsers() -> HashMap<&'static str, Box<ParserFn>> {
     let mut parsers = HashMap::new();
 
     parsers.insert(
@@ -125,7 +204,7 @@ fn get_parsers() -> HashMap<&'static str, Box<ParserFn>> {
         "String",
         Box::new(|v| {
             if let SupportedType::String(val) = v {
-                Ok(Box::new(val) as Box<dyn std::any::Any>)
+                Ok(Box::new(val.clone()) as Box<dyn std::any::Any>)
             } else {
                 Err("Type mismatch".into())
             }
@@ -144,83 +223,4 @@ fn get_parsers() -> HashMap<&'static str, Box<ParserFn>> {
     );
 
     parsers
-}
-
-fn parse_i32(arg_value: &str) -> i32 {
-    arg_value.parse::<i32>().expect("Expected i32 for argument")
-}
-
-fn parse_f32(arg_value: &str) -> f32 {
-    arg_value.parse::<f32>().expect("Expected f32 for argument")
-}
-
-fn parse_bool(arg_value: &str) -> bool {
-    match arg_value {
-        "true" => true,
-        "false" => false,
-        _ => panic!("Expected bool for argument"),
-    }
-}
-
-fn parse_string(arg_value: &str) -> String {
-    arg_value.to_string()
-}
-
-fn parse_argument(arg_type: &str, arg_value: &str) -> SupportedType {
-    match arg_type {
-        "i32" => SupportedType::I32(parse_i32(arg_value)),
-        "f32" => SupportedType::F32(parse_f32(arg_value)),
-        "bool" => SupportedType::Bool(parse_bool(arg_value)),
-        "String" | "&str" => SupportedType::String(parse_string(arg_value)),
-        _ => panic!("Invalid type"),
-    }
-}
-
-// Define the Tool struct with Arc and derive Clone
-#[derive(Clone)]
-struct Tool {
-    name: String,
-    function: Arc<dyn Fn(&[SupportedType]) -> MyResult<String> + Send + Sync>,
-    arg_names: Vec<String>,
-    arg_types: Vec<String>,
-}
-
-impl Tool {
-    fn call(&self, arguments_w_val: Value) -> MyResult<String> {
-        let arguments = arguments_w_val
-            .as_object()
-            .ok_or("Invalid arguments format")?;
-        let mut ordered_vals = Vec::new();
-
-        for (i, arg_name) in self.arg_names.iter().enumerate() {
-            if let Some(arg_value) = arguments.get(arg_name) {
-                let arg_str = arg_value.as_str().ok_or("Invalid argument value")?;
-                let parsed_arg = parse_argument(&self.arg_types[i], arg_str);
-                ordered_vals.push(parsed_arg);
-            } else {
-                return Err(format!("Missing argument: {}", arg_name).into());
-            }
-        }
-
-        (self.function)(&ordered_vals)
-    }
-}
-
-// Demonstrate how to use the generated tool
-fn main() -> Result<(), Box<dyn Error>> {
-    let tool = create_tool_with_function!(
-        fn get_current_weather(location: String, unit: String) -> MyResult<String>,
-        GET_WEATHER_TOOL_DEF_OBJ
-    );
-    let llm_output = serde_json::json!({
-        "location": "York, NY",
-        "unit": "fahrenheit"
-    });
-
-    match tool.call(llm_output) {
-        Ok(result) => println!("Result: {}", result),
-        Err(e) => eprintln!("Error: {e}"),
-    }
-
-    Ok(())
 }
