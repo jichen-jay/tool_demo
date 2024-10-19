@@ -79,6 +79,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "func_builder"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.77",
+]
+
+[[package]]
 name = "generic-array"
 version = "0.14.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -233,6 +243,7 @@ dependencies = [
  "async-trait",
  "bytemuck",
  "convert_case",
+ "func_builder",
  "hex",
  "inventory",
  "lazy_static",

@@ -1,1 +1,4 @@
 /target
+Cargo.lock
+func_builder/target
+func_builder/Cargo.lock

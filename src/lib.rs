@@ -1,145 +1,220 @@
-// use proc_macro::TokenStream;
-// use quote::{quote, format_ident};
-// use syn::{parse_macro_input, ItemFn, FnArg, Type};
+use serde_json::Value;
+use std::collections::HashMap;
+use std::error::Error;
 
-// #[proc_macro_attribute]
-// pub fn register_tool(_attr: TokenStream, item: TokenStream) -> TokenStream {
-//     let input = parse_macro_input!(item as ItemFn);
-//     let fn_name = &input.sig.ident;
-//     let fn_args = &input.sig.inputs;
+type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
-//     let mut json_properties = quote!();
-//     let mut arg_extractions = quote!();
-//     let mut fn_call_args = quote!();
+fn parse_i32(arg_value: &str) -> i32 {
+    arg_value.parse::<i32>().expect("Expected i32 for argument")
+}
 
-//     for arg in fn_args {
-//         if let FnArg::Typed(pat_type) = arg {
-//             if let Type::Reference(type_reference) = &*pat_type.ty {
-//                 if let Type::Path(type_path) = &*type_reference.elem {
-//                     let arg_name = &pat_type.pat;
-//                     let arg_type = &type_path.path.segments.last().unwrap().ident;
-                    
-//                     json_properties.extend(quote! {
-//                         #arg_name: {
-//                             "type": #arg_type.to_lowercase(),
-//                             "description": stringify!(#arg_name)
-//                         },
-//                     });
+fn parse_f32(arg_value: &str) -> f32 {
+    arg_value.parse::<f32>().expect("Expected f32 for argument")
+}
 
-//                     arg_extractions.extend(quote! {
-//                         let #arg_name = args.get(stringify!(#arg_name))
-//                             .ok_or_else(|| anyhow::anyhow!(concat!("Missing ", stringify!(#arg_name))))?;
-//                     });
+fn parse_bool(arg_value: &str) -> bool {
+    match arg_value {
+        "true" => true,
+        "false" => false,
+        _ => panic!("Expected bool for argument"),
+    }
+}
 
-//                     fn_call_args.extend(quote! {
-//                         #arg_name,
-//                     });
-//                 }
-//             }
-//         }
-//     }
+fn parse_string(arg_value: &str) -> String {
+    arg_value.to_string()
+}
 
-//     let expanded = quote! {
-//         #input
+#[derive(Debug)]
+enum SupportedType {
+    I32(i32),
+    F32(f32),
+    Bool(bool),
+    String(String),
+}
 
-//         inventory::submit! {
-//             Tool::new(
-//                 stringify!(#fn_name).to_string(),
-//                 serde_json::json!({
-//                     "name": stringify!(#fn_name),
-//                     "description": concat!("Automatically generated description for ", stringify!(#fn_name)),
-//                     "parameters": {
-//                         "type": "object",
-//                         "properties": {
-//                             #json_properties
-//                         },
-//                         "required": [#(stringify!(#fn_args)),*]
-//                     }
-//                 }),
-//                 |args: &std::collections::HashMap<String, String>| {
-//                     #arg_extractions
-//                     #fn_name(#fn_call_args)
-//                 }
-//             )
-//         }
+fn parse_argument(arg_type: &str, arg_value: &str) -> SupportedType {
+    match arg_type {
+        "i32" => SupportedType::I32(parse_i32(arg_value)),
+        "f32" => SupportedType::F32(parse_f32(arg_value)),
+        "bool" => SupportedType::Bool(parse_bool(arg_value)),
+        "String" => SupportedType::String(parse_string(arg_value)),
+        _ => panic!("Invalid type"),
+    }
+}
 
-//         inventory::collect!(Tool);
-//     };
+fn get_parsers() -> HashMap<&'static str, fn(&SupportedType) -> Box<dyn std::any::Any>> {
+    let mut parsers: HashMap<&str, fn(&SupportedType) -> Box<dyn std::any::Any>> = HashMap::new();
+    parsers.insert("i32", |v| {
+        if let SupportedType::I32(val) = v {
+            Box::new(*val)
+        } else {
+            panic!("Type mismatch")
+        }
+    });
+    parsers.insert("f32", |v| {
+        if let SupportedType::F32(val) = v {
+            Box::new(*val)
+        } else {
+            panic!("Type mismatch")
+        }
+    });
+    parsers.insert("bool", |v| {
+        if let SupportedType::Bool(val) = v {
+            Box::new(*val)
+        } else {
+            panic!("Type mismatch")
+        }
+    });
+    parsers.insert("String", |v| {
+        if let SupportedType::String(val) = v {
+            Box::new(val.clone())
+        } else {
+            panic!("Type mismatch")
+        }
+    });
+    parsers
+}
 
-//     TokenStream::from(expanded)
-// }
-// use anyhow::Result;
-// use serde_json::Value;
-// use std::collections::HashMap;
+struct Tool {
+    name: String,
+    function: Box<dyn Fn(&[SupportedType]) -> Result<String> + Send + Sync>,
+    arg_names: Vec<String>,
+    arg_types: Vec<String>,
+}
 
-// // This would be your preprocessor function
-// fn register_tool(json_description: &str, func: fn(&str, &str) -> Result<String>) -> Tool {
-//     let description: Value = serde_json::from_str(json_description).unwrap();
-    
-//     Tool {
-//         name: description["name"].as_str().unwrap().to_string(),
-//         description: description["description"].as_str().unwrap().to_string(),
-//         parameters: description["parameters"].clone(),
-//         function: Box::new(move |args: &HashMap<String, String>| {
-//             let location = args.get("location").ok_or_else(|| anyhow::anyhow!("Missing location"))?;
-//             let unit = args.get("unit").ok_or_else(|| anyhow::anyhow!("Missing unit"))?;
-//             func(location, unit)
-//         }),
-//     }
-// }
+impl Tool {
+    fn call(&self, arguments_w_val: Value) -> Result<String> {
+        let arguments = arguments_w_val["arguments"]
+            .as_array()
+            .ok_or("Invalid arguments format")?;
+        let mut ordered_vals = Vec::new();
 
-// struct Tool {
-//     name: String,
-//     description: String,
-//     parameters: Value,
-//     function: Box<dyn Fn(&HashMap<String, String>) -> Result<String>>,
-// }
+        for (i, arg_name) in self.arg_names.iter().enumerate() {
+            let arg_value = arguments.iter().find_map(|arg| {
+                let obj = arg.as_object().unwrap();
+                obj.get(arg_name)
+            });
 
-// impl Tool {
-//     fn call(&self, args: &HashMap<String, String>) -> Result<String> {
-//         (self.function)(args)
-//     }
-// }
+            if let Some(arg_value) = arg_value {
+                let arg_str = arg_value.as_str().ok_or("Invalid argument value")?;
+                let parsed_arg = parse_argument(&self.arg_types[i], arg_str);
+                ordered_vals.push(parsed_arg);
+            } else {
+                return Err(format!("Missing argument: {}", arg_name).into());
+            }
+        }
 
-// // Your original function
-// fn get_current_weather(location: &str, unit: &str) -> Result<String> {
-//     Ok(format!("fake_weather for {} in {}", location, unit))
-// }
+        (self.function)(&ordered_vals)
+    }
+}
 
-// fn main() -> Result<()> {
-//     // JSON description of the function
-//     let weather_tool_json = r#"
-//     {
-//         "name": "get_current_weather",
-//         "description": "Get the current weather in a given location",
-//         "parameters": {
-//             "type": "object",
-//             "properties": {
-//                 "location": {
-//                     "type": "string",
-//                     "description": "The city and state, e.g. San Francisco, CA"
-//                 },
-//                 "unit": {
-//                     "type": "string",
-//                     "enum": ["celsius", "fahrenheit"],
-//                     "description": "The unit of measurement"
-//                 }
-//             },
-//             "required": ["location", "unit"]
-//         }
-//     }
-//     "#;
+// Macro to create a Tool with a function and argument parsing logic
+#[macro_export]
+macro_rules! create_tool_with_function {
+    (
+        fn $func_name:ident($($arg_name:ident : $arg_type:ty),*) -> $ret_type:ty,
+        $PROCESS_VALUE_TOOL_DEF_OBJ:expr
+    ) => {{
+        let arg_names = vec![$(stringify!($arg_name).to_string()),*];
+        let arg_types = vec![$(stringify!($arg_type).to_string()),*];
 
-//     // Register the tool
-//     let weather_tool = register_tool(weather_tool_json, get_current_weather);
+        let func = Box::new(move |args: &[SupportedType]| -> Result<String> {
+            let parsers = get_parsers();
 
-//     // Use the tool
-//     let mut args = HashMap::new();
-//     args.insert("location".to_string(), "San Francisco, CA".to_string());
-//     args.insert("unit".to_string(), "fahrenheit".to_string());
-    
-//     let result = weather_tool.call(&args)?;
-//     println!("Result: {}", result);
+            let mut iter = args.iter();
+            $(
+                let $arg_name = {
+                    let arg = iter.next().unwrap();
+                    let parser = parsers.get(stringify!($arg_type)).expect("Parser not found");
+                    *parser(arg).downcast::<$arg_type>().expect("Type mismatch")
+                };
+            )*
 
-//     Ok(())
-// }
+            let result = $func_name($($arg_name),*);
+            Ok(result)
+        }) as Box<dyn Fn(&[SupportedType]) -> Result<String> + Send + Sync>;
+
+        Tool {
+            name: serde_json::from_str::<Value>($PROCESS_VALUE_TOOL_DEF_OBJ).unwrap()["name"]
+                .as_str()
+                .unwrap()
+                .to_string(),
+            function: func,
+            arg_names: arg_names,
+            arg_types: arg_types,
+        }
+    }};
+}
+
+fn get_current_weather(location: String, unit: String) -> String {
+    format!("Weather for {} in {}", location, unit)
+}
+
+fn process_values(a: i32, b: f32, c: bool, d: String, e: i32) -> String {
+    format!(
+        "Processed: a = {}, b = {}, c = {}, d = {}, e = {}",
+        a, b, c, d, e
+    )
+}
+
+pub const PROCESS_VALUE_TOOL_DEF_OBJ: & str = r#"
+        {
+            "name": "process_values",
+            "description": "Processes up to 5 different types of values",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "a": {
+                        "type": "i32",
+                        "description": "An integer value"
+                    },
+                    "b": {
+                        "type": "f32",
+                        "description": "A floating-point value"
+                    },
+                    "c": {
+                        "type": "bool",
+                        "description": "A boolean value"
+                    },
+                    "d": {
+                        "type": "string",
+                        "description": "A string value"
+                    },
+                    "e": {
+                        "type": "i32",
+                        "description": "Another integer value"
+                    }
+                },
+                "required": ["a", "b", "c", "d", "e"]
+            }
+        }
+        "#;
+
+pub const GET_WEATHER_TOOL_DEF_OBJ: &str = r#"
+        {
+            "name": "get_current_weather",
+            "description": "Get the current weather in a given location",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "The city and state, e.g. San Francisco, CA"
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": ["celsius", "fahrenheit"],
+                        "description": "The unit of measurement"
+                    }
+                },
+                "required": ["location", "unit"]
+            }
+        }
+        "#;
+
+// let tool = create_tool_with_function!(fn process_values(a: i32, b: f32, c: bool, d: String, e: i32) -> String, PROCESS_VALUE_TOOL_DEF_OBJ);
+// let result = tool.call(json_input).expect("Tool call failed");
+
+// let tool = create_tool_with_function!(fn get_current_weather(location: String, unit: String) -> String, weather_tool_json);
+// let result = tool.call(llm_output).expect("Function call failed");
+// assert_eq!(result, "Weather for Glasgow, Scotland in celsius");
