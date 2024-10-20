@@ -72,7 +72,7 @@ pub enum SupportedType {
 pub struct Tool {
   pub name: String,
   pub function: Arc<dyn Fn(&[SupportedType]) -> MyResult<String> + Send + Sync>,
-  pub tool_def_obj: &'static str,
+  pub tool_def_obj: String,
   pub arg_names: Vec<String>,
   pub arg_types: Vec<String>,
 }

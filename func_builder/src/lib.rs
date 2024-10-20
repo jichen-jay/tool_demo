@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_macro_input, Expr, ItemFn};
+use syn::{parse_macro_input, ItemFn, Expr};
 
 #[proc_macro_attribute]
 pub fn create_tool_with_function(attr: TokenStream, item: TokenStream) -> TokenStream {
@@ -10,34 +10,28 @@ pub fn create_tool_with_function(attr: TokenStream, item: TokenStream) -> TokenS
     // Parse the attribute as an expression
     let attr_expr = parse_macro_input!(attr as Expr);
 
-    // Extract the function name
     let fn_name = &input_fn.sig.ident;
+    let fn_name_str = fn_name.to_string();
 
-    // Create a variable name for the Tool instance
-    let tool_var_name = format_ident!("{}_TOOL", fn_name.to_string().to_uppercase());
+    let tool_var_name = format_ident!("{}_TOOL", fn_name_str.to_uppercase());
 
-    // Extract argument names and types
     let inputs = &input_fn.sig.inputs;
     let mut arg_names = Vec::new();
     let mut arg_type_tokens = Vec::new();
 
     for arg in inputs {
         if let syn::FnArg::Typed(pat_type) = arg {
-            // Get the argument name
             if let syn::Pat::Ident(pat_ident) = &*pat_type.pat {
                 let arg_name = &pat_ident.ident;
                 arg_names.push(quote! { #arg_name });
             }
-            // Get the argument type
             let arg_type = &*pat_type.ty;
             arg_type_tokens.push(arg_type.clone());
         }
     }
 
-    // Generate the code to create the Tool structn
     let gen = quote! {
         #input_fn
-
 
         pub static #tool_var_name: Lazy<Tool> = Lazy::new(|| {
             let arg_names = vec![#(stringify!(#arg_names).to_string()),*];
@@ -67,21 +61,39 @@ pub fn create_tool_with_function(attr: TokenStream, item: TokenStream) -> TokenS
                 func
             };
 
-            let tool_def_obj = #attr_expr;
+            // Use the attribute expression directly and convert to String
+            let tool_def_obj: String = (#attr_expr).to_string();
 
-            // Ensure tool_def_obj is a &str
-            let tool_def_obj_ref: &str = &tool_def_obj;
+            // Parse the JSON at runtime
+            let attr_json: serde_json::Value = serde_json::from_str(&tool_def_obj)
+                .expect("Invalid JSON in tool definition");
 
-            Tool {
-                name: serde_json::from_str::<serde_json::Value>(tool_def_obj_ref).unwrap()["name"]
-                    .as_str()
-                    .unwrap()
-                    .to_string(),
+            let json_name = attr_json["name"].as_str()
+                .expect("Expected 'name' field in tool definition");
+
+            // Compare function name and JSON name as &str
+            let fn_name_str = stringify!(#fn_name);
+
+            if fn_name_str != json_name {
+                panic!(
+                    "Function name '{}' does not match 'name' field '{}' in tool definition",
+                    fn_name_str, json_name
+                );
+            }
+
+            let tool = Tool {
+                name: json_name.to_string(),
                 function: func,
-                tool_def_obj: tool_def_obj.clone(),
+                tool_def_obj: tool_def_obj,
                 arg_names: arg_names,
                 arg_types: arg_types,
+            };
+
+            {
+                STORE.lock().unwrap().insert(tool.name.clone(), tool.clone());
             }
+
+            tool
         });
     };
 
